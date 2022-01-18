@@ -5,6 +5,10 @@ std::string sviewval_to_str(
   return std::string{std::string_view{view}};
 }
 
+std::map<int, int> pieceToVal{
+  {0, 1}, {1, 3}, {2, 3}, {3, 5}, {4, 9}, {5, 25}
+};
+
 simdjson::ondemand::parser parser;
 std::mutex stdoutmtx;
 std::vector<std::future<bool>> runningGames;
@@ -182,7 +186,7 @@ bool streamGame(game specificGame, std::queue<std::string> &q,
     } else {
       std::cout << "I am to move now\n";
     }
-    lastMove = calculateMove(pos);
+    lastMove = calculateMove(pos, 1);
     std::cout << "about to do the following move: " << lastMove << std::endl;
     lastMoveSet = true;
     if (!pos.is_legal(lastMove))
@@ -300,35 +304,137 @@ bool fillGameStreamBuffer(std::string data, intptr_t,
 
 int get_best_move(libchess::Position pos,
                   std::vector<libchess::Move> possibleMoves,
-                  libchess::Move &bestCapture) {
-  int bestEval = INT32_MIN;
+                  libchess::Move &bestCapture, int depth = 1, int argCoeff = 1,
+                  int maxDepth = 1) {
   libchess::Move bestMove;
-  int eval;
-  for (auto move : possibleMoves) {
-    std::cout << "evaluating move " << move << '\n';
-    eval = 0;
-    if (move.is_capturing()) {
-      eval += move.captured() + 1;
-    }
-    std::cout << "eval after checking for capture value: " << eval << '\n';
-    if (pos.square_attacked(move.to(), !pos.turn())) {
-      eval -= move.piece() + 1;
-    } else if (move.is_promoting()) {
-      eval += move.promotion();
+  int bestEval = INT32_MIN;
+  int localEval;
+  libchess::Move localMove;
+  int coeff = 1;
+  if (possibleMoves.empty()) {
+    return pos.in_check() * 10000 * argCoeff * depth;
+  }
+  if (depth == 1) {
+    for (auto move : possibleMoves) {
+      // std::cout << "evaluating move " << move << " at depth " << depth <<
+      // '\n';
+      localEval = 0;
+      if (!pos.is_legal(move)) {
+        localEval -= 20000;
+      }
+      pos.makemove(move);
+      /*if (move.is_capturing()) {
+        localEval += move.captured() + 1;
+      }*/
+      int myEval = 0;
+      int oppEval = 0;
+      int myLostPieceVal = 0;
+      int oppLostPieceVal = 0;
+      libchess::Bitboard myAttack = pos.squares_attacked(!pos.turn());
+      libchess::Bitboard myPieces = pos.occupancy(!pos.turn());
+      libchess::Bitboard oppAttack = pos.squares_attacked(pos.turn());
+      libchess::Bitboard oppPieces = pos.occupancy(pos.turn());
+      libchess::Bitboard myLost = ~myAttack & oppAttack & myPieces;
+      libchess::Bitboard freeEstate = myAttack & ~oppAttack & oppPieces;
+      int multiplier;
+      libchess::Bitboard mySpecPiece, oppSpecPiece;
+      for (int i = 0; i < 5; ++i) {
+        multiplier = pieceToVal[i];
+        mySpecPiece = pos.pieces(!pos.turn(), libchess::Piece(i));
+        oppSpecPiece = pos.pieces(pos.turn(), libchess::Piece(i));
+        myEval += multiplier * mySpecPiece.count();
+        oppEval += multiplier * oppSpecPiece.count();
+        myLostPieceVal += multiplier * (myLost & mySpecPiece).count();
+        oppLostPieceVal += multiplier * (freeEstate & oppSpecPiece).count();
+      }
+      localEval += myEval - oppEval;
+      localEval += (oppLostPieceVal - myLostPieceVal) / 2;
+      if (pos.in_check())
+        localEval += 1;
+      /* std::cout << "eval after checking for capture value: " << localEval <<
+       '\n';
+      if (pos.square_attacked(move.to(), pos.turn())) {
+        localEval -= move.piece() + 1;
+      } else if (move.is_promoting()) {
+        localEval += move.promotion();
+      }
+      // std::cout << "eval after checking if piece is threatened: " <<
+      // localEval << '\n';*/
+
+      if (pos.legal_moves().empty()) {
+        /*std::cout << "     no legal moves found." << pos << "\n";
+        std::cout << pos.in_check() << '\n';*/
+        if (pos.in_check()) {
+          // std::cout << "found checkmate with move " << move << " \n";
+          localEval = 10000;
+        } else {
+          localEval = 0;
+        }
+        /*std::cout << "eval after checking if piece is threatened: " <<
+           localEval
+                  << '\n';*/
+        if (pos.threefold() || pos.fiftymoves()) {
+          std::cout << "discovered draw, setting eval = 0\n";
+          localEval = 0;
+        }
+      }
+      pos.undomove();
+      if (localEval > bestEval) {
+        // std::cout << "replacing bestEval: " << localEval << ", " << move <<
+        // '\n';
+        bestEval = localEval;
+        bestMove = move;
+      }
     }
 
-    std::cout << "eval after checking if piece is threatened: " << eval << '\n';
-    if (eval > bestEval) {
-      std::cout << "replacing bestEval: " << eval << ", " << move << '\n';
-      bestEval = eval;
-      bestMove = move;
+    coeff = argCoeff;
+  } else {
+    auto legalMoves = pos.legal_moves();
+    if (depth == maxDepth) {
+      std::cout << legalMoves.size() << "legmovs in loop at depth "<< depth <<'\n';
+    }
+    for (auto move : possibleMoves) {
+      localEval = 0;
+      pos.makemove(move);
+      legalMoves = pos.legal_moves();
+      localEval = -get_best_move(pos, legalMoves, localMove, depth - 1,
+                                 -argCoeff, maxDepth);
+      pos.undomove();
+      /*std::cout << "current eval: " << localEval << ", " << move << " at depth
+      "
+                << depth << '\n';
+      std::cout << "current bestEval: " << bestEval << ", " << bestMove
+                << " at depth " << depth << '\n';*/
+      if (depth == maxDepth) {
+        std::cout << " depth: " << depth << ", move: " << move
+                  << ", eval: " << localEval << '\n';
+      }
+      if (localEval > bestEval) {
+        /*std::cout << "replacing bestEval: " << localEval << ", " << move
+                  << " at depth " << depth << '\n';*/
+        bestEval = localEval;
+        bestMove = move;
+      }
     }
   }
+  if (possibleMoves.size() == 0) {
+    /*std::cout << "     no legal moves found." << pos << "\n";
+    std::cout << (pos.in_check()) << '\n';*/
+    if (pos.in_check()) {
+      bestMove = pos.history().back().move;
+      // std::cout << "found checkmate with move " << bestMove << " \n";
+      bestEval = 10000;
+    } else {
+      bestEval = 0;
+    }
+  }
+  /*std::cout << "returning bestEval: " << coeff * bestEval << ", " << bestMove
+            << " from depth " << depth << '\n';*/
   bestCapture = bestMove;
-  return bestEval;
+  return coeff * bestEval;
 }
 
-libchess::Move calculateMove(libchess::Position pos) {
+libchess::Move calculateMove(libchess::Position pos, int depth) {
   libchess::Move lastMove;
   auto legalMoves = pos.legal_moves();
   auto possibleCaptures = pos.legal_captures();
@@ -389,7 +495,10 @@ libchess::Move calculateMove(libchess::Position pos) {
     lastMove = possibleFreeCaps[0];
   } else */
   libchess::Move bestMove;
-  int bestMoveEval = get_best_move(pos, legalMoves, bestMove);
+  // depth = 2;
+  int firstFactor = 2 * (depth % 2) - 1;
+  int bestMoveEval =
+      get_best_move(pos, legalMoves, bestMove, depth, firstFactor, depth);
   if (legalMoves.size() == 0) {
     lastMove = pos.parse_move("a1a1");
   } else {
@@ -403,8 +512,8 @@ libchess::Move calculateMove(libchess::Position pos) {
 bool wrapperCallback(std::string data, game &thisGame,
                      /* simdjson::ondemand::parser &gameParser,
                       simdjson::ondemand::document &state, */
-                     std::mutex &gamemtx) {
-  std::cout << "input to fillGameStreamBuffer: " << data << '\n';
+                     std::mutex &gamemtx, int &currentDepth) {
+  std::cout << "input to wrapperCallback: " << data << '\n';
   if (data.length() < 5 || data.find('{') == std::string::npos) {
     std::cout << "exiting wrapperCallback because only keep alive\n";
     return true;
@@ -418,7 +527,11 @@ bool wrapperCallback(std::string data, game &thisGame,
   std::cout << "now locking\n";
   std::lock_guard<std::mutex> lckg(gamemtx);
   std::cout << "locked the mutex with a lock guard\n";
-  if (respType == "gameFull") {
+  simdjson::ondemand::object stat;
+  std::string stateString;
+  if (respType == "chatLine") {
+    return true;
+  } else if (respType == "gameFull") {
     std::cout << "trying to get gameid\n";
     std::string id{state["id"].get_string().take_value()};
     std::cout << "trying to fill thisGame.gameId\n";
@@ -437,21 +550,15 @@ bool wrapperCallback(std::string data, game &thisGame,
     thisGame.gamePos = libchess::Position{
         std::string{state["initialFen"].get_string().take_value()}};
     moves = state["state"]["moves"].get_string().take_value();
-    if (state["state"]["status"].get_string().take_value() != "started") {
-      std::cout
-          << "exiting wrapperCallback because game probaly over, status is "
-          << state["status"].get_string().take_value() << "\n";
-      return false;
-    }
+    stat = state["state"];
   } else if (respType == "gameState") {
+    std::cout << "respType == gameState is true\n";
     moves = std::string{state["moves"].get_string().take_value()};
-    if (state["status"].get_string().take_value() != "started") {
-      std::cout
-          << "exiting wrapperCallback because game probaly over, status is "
-          << state["status"].get_string().take_value() << "\n";
-      return false;
-    }
+    // stat = state.get_object().take_value();
+    // stateString = std::string{state.get_raw_json_string().raw()};
   }
+  bool statOrState = respType == "gameState";
+  stateString.resize(stateString.size() + simdjson::SIMDJSON_PADDING);
   size_t poss, movePos, moveEnd;
   poss = movePos = moveEnd = 0;
   libchess::Position &pos = thisGame.gamePos;
@@ -459,11 +566,42 @@ bool wrapperCallback(std::string data, game &thisGame,
   bool previousMoveExists = (pos.history().size() > 0);
   std::string previousMoveStr;
   libchess::Move previousMove;
+  size_t availableTime = 0;
+  std::string side = pos.turn() == libchess::Side::White ? "w" : "b";
+  std::string fieldstr = side + "time";
+  std::cout << "fieldstr no is " << fieldstr << '\n';
+  std::string status;
+  if (statOrState) {
+    size_t timeLeft = state[fieldstr].get_int64().take_value();
+    availableTime += timeLeft / 900 * pos.fullmove_clock_;
+    fieldstr = side + "inc";
+    std::cout << "fieldstr now is " << fieldstr << '\n';
+    availableTime += state[fieldstr].get_uint64().take_value();
+    availableTime = std::min(timeLeft - 2000, availableTime);
+    status = std::string{state["status"].get_string().take_value()};
+  } else {
+    size_t timeLeft = stat[fieldstr].get_int64().take_value();
+    availableTime += timeLeft / 90 * pos.history().size();
+    fieldstr = side + "inc";
+    std::cout << "fieldstr now is " << fieldstr << '\n';
+    availableTime += stat[fieldstr].get_uint64().take_value();
+    availableTime = std::min(timeLeft - 2000, availableTime);
+    status = std::string{stat["status"].get_string().take_value()};
+  }
+  std::cout << "availableTime is " << availableTime << '\n';
+
+  if (status != "started") {
+    std::cout
+        << "exiting wrapperCallback because game probably over, status is "
+        << status << "\n";
+    return false;
+  }
   if (previousMoveExists) {
     previousMove = pos.history().back().move;
     previousMoveStr = static_cast<std::string>(previousMove);
     std::cout << "previousMoveSTr= " << previousMoveStr << std::endl;
     while ((movePos = moves.find(previousMoveStr)) != std::string::npos &&
+
            moves.size() > 0) {
       if (movePos != std::string::npos) {
         moveEnd = moves.find(' ', movePos);
@@ -477,7 +615,6 @@ bool wrapperCallback(std::string data, game &thisGame,
         }
       } else {
         std::cout << "some error probably occurred, cant find previousMove in "
-
                      "move string from response\n";
       }
     }
@@ -487,12 +624,12 @@ bool wrapperCallback(std::string data, game &thisGame,
   while ((poss = moves.find(' ')) != std::string::npos) {
     singleMoveStr = moves.substr(0, poss);
     std::cout << "current move: " << singleMoveStr << std::endl;
-
     std::cout << pos << std::endl;
     singleMove = pos.parse_move(singleMoveStr);
     std::cout << "singleMoveStr legal: " << pos.is_legal(singleMove) << '\n';
     if (pos.history().size() > 0)
-      std::cout << static_cast<std::string>(pos.history().back().move)
+      std::cout << static_cast<
+std::string>(pos.history().back().move)
                 << std::endl;
     pos.makemove(singleMove);
     moves.erase(0, poss + 1);
@@ -506,15 +643,39 @@ bool wrapperCallback(std::string data, game &thisGame,
     std::cout << "exiting wrapperCallback because not my turn\n";
     return true;
   }
+  if (status != "started") {
+    std::cout << "exiting wrapperCallback because game probaly over, status is "
+              << state["status"].get_string().take_value() << "\n";
+    return false;
+  }
   std::cout << pos << '\n';
-  previousMove = calculateMove(pos);
+  auto start = std::chrono::steady_clock::now();
+  previousMove = calculateMove(pos, currentDepth);
+  auto end = std::chrono::steady_clock::now();
+  size_t mstime =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
+  std::cout
+      << "calculated moves until depth " << currentDepth << " in "
+      << std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+             .count()
+      << " ns or "
+      << std::chrono::duration_cast<std::chrono::microseconds>(end - start)
+             .count()
+      << " µs or " << mstime << " ms or "
+      << std::chrono::duration_cast<std::chrono::seconds>(end - start).count()
+      << " sec\n";
+  if (mstime == 0 || availableTime / mstime > 20) {
+    ++currentDepth;
+  } else if ((mstime - 1000) > availableTime) {
+    --currentDepth;
+  }
   if (!pos.is_legal(previousMove)) {
     std::cout << "exiting wrapperCallback because returned move not legal\n";
     return false;
   }
   pos.makemove(previousMove);
   cpr::Response moveResp =
-
       cpr::Post(cpr::Url{"https://lichess.org/api/bot/game/" + thisGame.gameId +
                          "/move/" + static_cast<std::string>(previousMove)},
                 authHeader);
@@ -528,13 +689,14 @@ void wrapperStreamgame(std::string gameId) {
   simdjson::ondemand::document state;
   std::mutex accessToGlobals;
   game thisGame;
+  int currentDepth = 2;
   std::cout << "now beginning to stream game with id " << gameId << '\n';
   cpr::Response r = cpr::Get(
       cpr::Url("https://lichess.org/api/bot/game/stream/" + gameId), authHeader,
-      cpr::WriteCallback([&thisGame, &gameParser, &state,
-                          &accessToGlobals](std::string data, intptr_t) {
+      cpr::WriteCallback([&thisGame, &gameParser, &state, &accessToGlobals,
+                          &currentDepth](std::string data, intptr_t) {
         return wrapperCallback(data, thisGame, /* gameParser, state,*/
-                               accessToGlobals);
+                               accessToGlobals, currentDepth);
       }));
   std::cout << "exiting wrapperStreamgame, game is over\n";
 }

@@ -23,7 +23,7 @@ struct game {
 };
 bool wrapperCallback(std::string data, game &thisGame,
                      simdjson::ondemand::parser &gameParser,
-                     simdjson::ondemand::document &state);
+                     simdjson::ondemand::document &state, int &currentDepth);
 bool streamEventsCallback(std::string data, intptr_t);
 // bool streamGame(game specificGame, std::stringstream ss);
 
@@ -35,6 +35,7 @@ bool fillGameStreamBuffer(std::string data, intptr_t,
                           std::condition_variable &condvar);
 std::string sviewval_to_str(
     simdjson::simdjson_result<simdjson::fallback::ondemand::value> view);
-libchess::Move calculateMove(libchess::Position pos);
+libchess::Move calculateMove(libchess::Position pos, int depth=1);
 void wrapperStreamgame(std::string gameId);
+
 #endif
