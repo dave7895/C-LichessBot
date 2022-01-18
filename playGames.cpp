@@ -5,9 +5,7 @@ std::string sviewval_to_str(
   return std::string{std::string_view{view}};
 }
 
-std::map<int, int> pieceToVal{
-  {0, 1}, {1, 3}, {2, 3}, {3, 5}, {4, 9}, {5, 25}
-};
+std::map<int, int> pieceToVal{{0, 1}, {1, 3}, {2, 3}, {3, 5}, {4, 9}, {5, 25}};
 
 simdjson::ondemand::parser parser;
 std::mutex stdoutmtx;
@@ -34,14 +32,24 @@ bool streamEventsCallback(std::string data, intptr_t) {
     std::string challengeId{std::string_view{doc["challenge"]["id"]}};
     if (std::string_view{doc["challenge"]["id"]} == g_myId)
       return true;
+    std::string variant{
+        doc["challenge"]["variant"]["key"].get_string().take_value()};
     std::cout << "received challenge from "
               << std::string{std::string_view{
                      doc["challenge"]["challenger"]["id"].value()}}
               << "\n";
-    cpr::Response decl =
-        cpr::Post(cpr::Url{"https://lichess.org/api/challenge/" + challengeId +
-                           "/accept"},
-                  authHeader);
+    if (variant == "standard" || variant == "threeCheck")
+      cpr::Response acc =
+          cpr::Post(cpr::Url{"https://lichess.org/api/challenge/" +
+                             challengeId + "/accept"},
+                    authHeader);
+    else {
+      cpr::Response decl =
+          cpr::Post(cpr::Url{"https://lichess.org/api/challenge/" +
+                             challengeId + "/decline"},
+                    authHeader, cpr::Payload{{"reason", "variant"}});
+      return true;
+    }
     libchess::Position startpos{
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"};
     game fromChallenge(
@@ -391,7 +399,8 @@ int get_best_move(libchess::Position pos,
   } else {
     auto legalMoves = pos.legal_moves();
     if (depth == maxDepth) {
-      std::cout << legalMoves.size() << "legmovs in loop at depth "<< depth <<'\n';
+      std::cout << legalMoves.size() << "legmovs in loop at depth " << depth
+                << '\n';
     }
     for (auto move : possibleMoves) {
       localEval = 0;
@@ -573,7 +582,7 @@ bool wrapperCallback(std::string data, game &thisGame,
   std::string status;
   if (statOrState) {
     size_t timeLeft = state[fieldstr].get_int64().take_value();
-    availableTime += timeLeft / 900 * pos.fullmove_clock_;
+    availableTime += timeLeft / 900 * pos.history().size()/2;
     fieldstr = side + "inc";
     std::cout << "fieldstr now is " << fieldstr << '\n';
     availableTime += state[fieldstr].get_uint64().take_value();
@@ -628,8 +637,7 @@ bool wrapperCallback(std::string data, game &thisGame,
     singleMove = pos.parse_move(singleMoveStr);
     std::cout << "singleMoveStr legal: " << pos.is_legal(singleMove) << '\n';
     if (pos.history().size() > 0)
-      std::cout << static_cast<
-std::string>(pos.history().back().move)
+      std::cout << static_cast<std::string>(pos.history().back().move)
                 << std::endl;
     pos.makemove(singleMove);
     moves.erase(0, poss + 1);
