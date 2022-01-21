@@ -321,25 +321,27 @@ void evaluate_position(libchess::Position const &pos, int &localEval) {
       localEval = 0;
     }
   } else if (pos.threefold() || pos.fiftymoves()) {
-    //std::cout << "discovered draw, setting eval = 0\n";
+    // std::cout << "discovered draw, setting eval = 0\n";
     localEval = 0;
   } else {
     int myEval = 0;
     int oppEval = 0;
     int myLostPieceVal = 0;
     int oppLostPieceVal = 0;
-    libchess::Bitboard myAttack = pos.squares_attacked(!pos.turn());
-    libchess::Bitboard myPieces = pos.occupancy(!pos.turn());
-    libchess::Bitboard oppAttack = pos.squares_attacked(pos.turn());
-    libchess::Bitboard oppPieces = pos.occupancy(pos.turn());
+    libchess::Side me = !pos.turn();
+    auto opp = !me;
+    libchess::Bitboard myAttack = pos.squares_attacked(me);
+    libchess::Bitboard myPieces = pos.occupancy(me);
+    libchess::Bitboard oppAttack = pos.squares_attacked(opp);
+    libchess::Bitboard oppPieces = pos.occupancy(opp);
     libchess::Bitboard myLost = ~myAttack & oppAttack & myPieces;
     libchess::Bitboard freeEstate = myAttack & ~oppAttack & oppPieces;
     int multiplier;
     libchess::Bitboard mySpecPiece, oppSpecPiece;
     for (int i = 0; i < 5; ++i) {
       multiplier = pieceToVal[i];
-      mySpecPiece = pos.pieces(!pos.turn(), libchess::Piece(i));
-      oppSpecPiece = pos.pieces(pos.turn(), libchess::Piece(i));
+      mySpecPiece = pos.pieces(me, libchess::Piece(i));
+      oppSpecPiece = pos.pieces(opp, libchess::Piece(i));
       myEval += multiplier * mySpecPiece.count();
       oppEval += multiplier * oppSpecPiece.count();
       myLostPieceVal += multiplier * (myLost & mySpecPiece).count();
@@ -355,15 +357,17 @@ void evaluate_position(libchess::Position const &pos, int &localEval) {
 
 int negamax(libchess::Position pos, std::vector<libchess::Move> possibleMoves,
             libchess::Move &bestCapture, int64_t alpha, int64_t beta,
-            int depth = 1, int argCoeff = 1, int maxDepth = 1) {
+            int depth = 1, libchess::Side me = libchess::Side::White,
+            int maxDepth = 1) {
   libchess::Move bestMove;
   int bestEval = INT32_MIN;
   int localEval;
   libchess::Move localMove;
-  int coeff = 1;
+  bool myEval = pos.turn() == me;
   depth = std::max(depth, 1);
   if (possibleMoves.empty()) {
-    return pos.in_check() * 10000 * argCoeff * depth;
+    bestEval = pos.in_check() * 10000 * depth;
+    return myEval ? bestEval : -bestEval;
   } else if (depth == 1) {
     for (auto move : possibleMoves) {
       // std::cout << "evaluating move " << move << " at depth " << depth <<
@@ -382,9 +386,8 @@ int negamax(libchess::Position pos, std::vector<libchess::Move> possibleMoves,
         bestMove = move;
       }
     }
-    coeff = argCoeff;
     bestCapture = bestMove;
-    return bestEval * argCoeff;
+    return myEval ? bestEval : /*-*/ bestEval;
   } else {
     auto legalMoves = pos.legal_moves();
     if (depth == maxDepth) {
@@ -396,7 +399,7 @@ int negamax(libchess::Position pos, std::vector<libchess::Move> possibleMoves,
       pos.makemove(move);
       legalMoves = pos.legal_moves();
       localEval = -negamax(pos, legalMoves, localMove, -beta, -alpha, depth - 1,
-                           -argCoeff, maxDepth);
+                           me, maxDepth);
       pos.undomove();
       /*std::cout << "current eval: " << localEval << ", " << move << " at depth
       "
@@ -492,7 +495,7 @@ libchess::Move calculateMove(libchess::Position pos, int depth) {
   // depth = 2;
   int firstFactor = depth % 2 ? 1 : -1;
   int bestMoveEval = negamax(pos, legalMoves, bestMove, INT64_MIN, INT64_MAX,
-                             depth, firstFactor, depth);
+                             depth, pos.turn(), depth);
   if (legalMoves.size() == 0) {
     lastMove = pos.parse_move("a1a1");
   } else {
@@ -565,8 +568,9 @@ bool wrapperCallback(std::string data, game &thisGame,
   std::string fieldstr = side + "time";
   std::cout << "fieldstr no is " << fieldstr << '\n';
   std::string status;
+  size_t timeLeft;
   if (statOrState) {
-    size_t timeLeft = state[fieldstr].get_int64().take_value();
+    timeLeft = state[fieldstr].get_int64().take_value();
     availableTime += timeLeft / 900 * pos.history().size() / 2;
     fieldstr = side + "inc";
     std::cout << "fieldstr now is " << fieldstr << '\n';
@@ -574,7 +578,7 @@ bool wrapperCallback(std::string data, game &thisGame,
     availableTime = std::min(timeLeft - 2000, availableTime);
     status = std::string{state["status"].get_string().take_value()};
   } else {
-    size_t timeLeft = stat[fieldstr].get_int64().take_value();
+    timeLeft = stat[fieldstr].get_int64().take_value();
     availableTime += timeLeft / 90 * pos.history().size();
     fieldstr = side + "inc";
     std::cout << "fieldstr now is " << fieldstr << '\n';
@@ -658,10 +662,10 @@ bool wrapperCallback(std::string data, game &thisGame,
       << " µs or " << mstime << " ms or "
       << std::chrono::duration_cast<std::chrono::seconds>(end - start).count()
       << " sec\n";
-  mstime = std::max(mstime, mstime/pos.legal_moves().size() * 15);
+  mstime = std::max(mstime, mstime / pos.legal_moves().size() * 15);
   if (mstime == 0 || availableTime / mstime > 20) {
     ++currentDepth;
-  } else if ((mstime - 1000) > availableTime) {
+  } else if ((mstime - (availableTime-timeLeft/30) - 1000) > timeLeft) {
     --currentDepth;
   }
   if (!pos.is_legal(previousMove)) {
