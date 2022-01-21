@@ -658,6 +658,7 @@ bool wrapperCallback(std::string data, game &thisGame,
       << " µs or " << mstime << " ms or "
       << std::chrono::duration_cast<std::chrono::seconds>(end - start).count()
       << " sec\n";
+  mstime = std::max(mstime, mstime/pos.legal_moves().size() * 15);
   if (mstime == 0 || availableTime / mstime > 20) {
     ++currentDepth;
   } else if ((mstime - 1000) > availableTime) {
