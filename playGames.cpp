@@ -315,8 +315,8 @@ void evaluate_position(libchess::Position const &pos, int &localEval) {
     /*std::cout << "     no legal moves found." << pos << "\n";
     std::cout << pos.in_check() << '\n';*/
     if (pos.in_check()) {
-      // std::cout << "found checkmate with move " << move << " \n";
-      localEval = 10000;
+      std::cout << "found checkmate with " << pos.turn() << " to move \n";
+      localEval = mateScore;
     } else {
       localEval = 0;
     }
@@ -363,11 +363,13 @@ int negamax(libchess::Position pos, std::vector<libchess::Move> possibleMoves,
   int bestEval = INT32_MIN;
   int localEval;
   libchess::Move localMove;
-  bool myEval = pos.turn() == me;
+  bool myEval = true; //pos.turn() == me;
   depth = std::max(depth, 1);
   if (possibleMoves.empty()) {
-    bestEval = pos.in_check() * 10000 * depth;
-    return myEval ? bestEval : -bestEval;
+    bestEval = pos.in_check() * mateScore * depth;
+    return myEval ? -bestEval : bestEval;
+    std::cout << "discovered mate at depth " << depth << ", " << pos.turn()
+              << " can't move, returning " << bestEval << '\n';
   } else if (depth == 1) {
     for (auto move : possibleMoves) {
       // std::cout << "evaluating move " << move << " at depth " << depth <<
@@ -377,7 +379,9 @@ int negamax(libchess::Position pos, std::vector<libchess::Move> possibleMoves,
       /*if (move.is_capturing()) {
         localEval += move.captured() + 1;
       }*/
+      //std::cout << localEval << ' ';
       evaluate_position(pos, localEval);
+      //std::cout << localEval << ' ';
       pos.undomove();
       if (localEval > bestEval) {
         // std::cout << "replacing bestEval: " << localEval << ", " << move <<
@@ -387,7 +391,7 @@ int negamax(libchess::Position pos, std::vector<libchess::Move> possibleMoves,
       }
     }
     bestCapture = bestMove;
-    return myEval ? bestEval : /*-*/ bestEval;
+    return myEval ? bestEval : -bestEval;
   } else {
     auto legalMoves = pos.legal_moves();
     if (depth == maxDepth) {
@@ -665,7 +669,7 @@ bool wrapperCallback(std::string data, game &thisGame,
   mstime = std::max(mstime, mstime / pos.legal_moves().size() * 15);
   if (mstime == 0 || availableTime / mstime > 20) {
     ++currentDepth;
-  } else if ((mstime - (availableTime-timeLeft/30) - 1000) > timeLeft) {
+  } else if ((mstime - (availableTime - timeLeft / 30) - 1000) > timeLeft) {
     --currentDepth;
   }
   if (!pos.is_legal(previousMove)) {

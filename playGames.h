@@ -35,7 +35,7 @@ bool fillGameStreamBuffer(std::string data, intptr_t,
                           std::condition_variable &condvar);
 std::string sviewval_to_str(
     simdjson::simdjson_result<simdjson::fallback::ondemand::value> view);
-libchess::Move calculateMove(libchess::Position pos, int depth=1);
+libchess::Move calculateMove(libchess::Position pos, int depth = 1);
 void wrapperStreamgame(std::string gameId);
-
+const int mateScore = 10000;
 #endif
