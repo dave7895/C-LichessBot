@@ -5,8 +5,8 @@ std::string sviewval_to_str(
   return std::string{std::string_view{view}};
 }
 
-std::map<int, int> pieceToVal{{0, 1}, {1, 3}, {2, 3}, {3, 5}, {4, 9}, {5, 25}};
-
+std::random_device rd;
+std::default_random_engine rng(rd());
 simdjson::ondemand::parser parser;
 std::mutex stdoutmtx;
 std::vector<std::future<bool>> runningGames;
@@ -310,202 +310,175 @@ bool fillGameStreamBuffer(std::string data, intptr_t,
   return true;
 }
 
-void evaluate_position(libchess::Position const &pos, int &localEval) {
-  if (pos.legal_moves().empty()) {
-    /*std::cout << "     no legal moves found." << pos << "\n";
-    std::cout << pos.in_check() << '\n';*/
-    if (pos.in_check()) {
-      std::cout << "found checkmate with " << pos.turn() << " to move \n";
-      localEval = mateScore;
-    } else {
-      localEval = 0;
-    }
-  } else if (pos.threefold() || pos.fiftymoves()) {
-    // std::cout << "discovered draw, setting eval = 0\n";
-    localEval = 0;
-  } else {
-    int myEval = 0;
-    int oppEval = 0;
-    int myLostPieceVal = 0;
-    int oppLostPieceVal = 0;
-    libchess::Side me = !pos.turn();
-    auto opp = !me;
-    libchess::Bitboard myAttack = pos.squares_attacked(me);
-    libchess::Bitboard myPieces = pos.occupancy(me);
-    libchess::Bitboard oppAttack = pos.squares_attacked(opp);
-    libchess::Bitboard oppPieces = pos.occupancy(opp);
-    libchess::Bitboard myLost = ~myAttack & oppAttack & myPieces;
-    libchess::Bitboard freeEstate = myAttack & ~oppAttack & oppPieces;
-    int multiplier;
-    libchess::Bitboard mySpecPiece, oppSpecPiece;
-    for (int i = 0; i < 5; ++i) {
-      multiplier = pieceToVal[i];
-      mySpecPiece = pos.pieces(me, libchess::Piece(i));
-      oppSpecPiece = pos.pieces(opp, libchess::Piece(i));
-      myEval += multiplier * mySpecPiece.count();
-      oppEval += multiplier * oppSpecPiece.count();
-      myLostPieceVal += multiplier * (myLost & mySpecPiece).count();
-      oppLostPieceVal += multiplier * (freeEstate & oppSpecPiece).count();
-    }
-    localEval += myEval - oppEval;
-    localEval += (oppLostPieceVal - myLostPieceVal) / 2;
-    if (pos.in_check()) {
-      localEval += 1;
-    }
+int evaluate_position(libchess::Position const &pos, const int &depth = 0) {
+  if (pos.is_terminal()) {
+    return pos.in_check() * -mateScore * (depth + 1);
   }
+  if (pos.threefold() || pos.fiftymoves()) {
+    // std::cout << "discovered draw, setting eval = 0\n";
+    return 0;
+  }
+  int localEval = 0;
+  int myEval = 0;
+  int oppEval = 0;
+  int myLostPieceVal = 0;
+  int oppLostPieceVal = 0;
+  int myUnprotectedVal = 0;
+  const libchess::Side me = !pos.turn();
+  const auto opp = !me;
+  libchess::Bitboard myAttack = pos.squares_attacked(me);
+  libchess::Bitboard myPieces = pos.occupancy(me);
+  libchess::Bitboard oppAttack = pos.squares_attacked(opp);
+  libchess::Bitboard oppPieces = pos.occupancy(opp);
+  libchess::Bitboard myLost = ~myAttack & oppAttack & myPieces;
+  libchess::Bitboard freeEstate = myAttack & ~oppAttack & oppPieces;
+  for (int i = 0; i < 5; ++i) {
+    const int multiplier = pieceToVal[i];
+    const auto mySpecPiece = pos.pieces(me, libchess::Piece(i));
+    const auto oppSpecPiece = pos.pieces(opp, libchess::Piece(i));
+    myEval += multiplier * mySpecPiece.count();
+    oppEval += multiplier * oppSpecPiece.count();
+    myLostPieceVal += multiplier * (myLost & mySpecPiece).count();
+    oppLostPieceVal += multiplier * (freeEstate & oppSpecPiece).count();
+    myUnprotectedVal += multiplier * (~myAttack & mySpecPiece).count();
+  }
+  localEval += myEval - oppEval;
+  localEval += (oppLostPieceVal - myLostPieceVal) / 2;
+  localEval -= myUnprotectedVal / 8;
+  if (pos.in_check()) {
+    localEval -= 50;
+  }
+  return localEval;
 }
 
-int negamax(libchess::Position pos, std::vector<libchess::Move> possibleMoves,
-            libchess::Move &bestCapture, int64_t alpha, int64_t beta,
-            int depth = 1, libchess::Side me = libchess::Side::White,
-            int maxDepth = 1) {
-  libchess::Move bestMove;
+int escalating_eval(libchess::Position const &pos, const int depth) {
+  if (pos.is_terminal()) {
+    return pos.in_check() * -mateScore * (depth + 1);
+  }
+  if (pos.threefold() || pos.fiftymoves()) {
+    return 0;
+  }
+  int myPieceEval = 0;
+  int oppPieceEval = 0;
+  const auto me = pos.turn();
+  const auto opp = !me;
+  const auto myPieces = pos.occupancy(me);
+  const auto oppPieces = pos.occupancy(opp);
+  for (int i = 0; i < 5; ++i) {
+    const int multiplier = pieceToVal[i];
+    const auto piecePositions = pos.occupancy(libchess::Piece(i));
+    myPieceEval += multiplier * (piecePositions & myPieces).count();
+    oppPieceEval += multiplier * (piecePositions & oppPieces).count();
+  }
+  int totalEval = myPieceEval - oppPieceEval;
+  return totalEval;
+}
+
+int negamax(libchess::Position pos, const int depth = 1, int alpha = INT32_MIN,
+            int beta = INT32_MAX, const int maxDepth = 1) {
   int bestEval = INT32_MIN;
-  int localEval;
-  libchess::Move localMove;
-  bool myEval = true; //pos.turn() == me;
-  depth = std::max(depth, 1);
-  if (possibleMoves.empty()) {
-    bestEval = pos.in_check() * mateScore * depth;
-    return myEval ? -bestEval : bestEval;
-    std::cout << "discovered mate at depth " << depth << ", " << pos.turn()
-              << " can't move, returning " << bestEval << '\n';
-  } else if (depth == 1) {
-    for (auto move : possibleMoves) {
-      // std::cout << "evaluating move " << move << " at depth " << depth <<
-      // '\n';
-      localEval = 0;
-      pos.makemove(move);
-      /*if (move.is_capturing()) {
-        localEval += move.captured() + 1;
-      }*/
-      //std::cout << localEval << ' ';
-      evaluate_position(pos, localEval);
-      //std::cout << localEval << ' ';
-      pos.undomove();
-      if (localEval > bestEval) {
-        // std::cout << "replacing bestEval: " << localEval << ", " << move <<
-        // '\n';
-        bestEval = localEval;
-        bestMove = move;
-      }
-    }
-    bestCapture = bestMove;
-    return myEval ? bestEval : -bestEval;
-  } else {
-    auto legalMoves = pos.legal_moves();
+  auto legalMoves = pos.legal_moves();
+  if (depth <= 0 || legalMoves.empty()) {
+    return escalating_eval(pos, depth);
+  }
+  if (depth == maxDepth) {
+    std::cout << legalMoves.size() << " legmovs in loop at depth " << depth
+              << '\n';
+  }
+  // std::shuffle(legalMoves.begin(), legalMoves.end(), rng);
+  const auto moves = legalMoves;
+  for (const auto &move : moves) {
+    pos.makemove(move);
+    bestEval =
+        std::max(bestEval, -negamax(pos, depth - 1, -beta, -alpha, maxDepth));
+    pos.undomove();
     if (depth == maxDepth) {
-      std::cout << legalMoves.size() << " legmovs in loop at depth " << depth
-                << '\n';
+      std::cout << " depth: " << depth << ", move: " << move
+                << ", bestEval: " << bestEval << '\n';
     }
-    for (auto move : possibleMoves) {
-      localEval = 0;
-      pos.makemove(move);
-      legalMoves = pos.legal_moves();
-      localEval = -negamax(pos, legalMoves, localMove, -beta, -alpha, depth - 1,
-                           me, maxDepth);
-      pos.undomove();
-      /*std::cout << "current eval: " << localEval << ", " << move << " at depth
-      "
-                << depth << '\n';
-      std::cout << "current bestEval: " << bestEval << ", " << bestMove
-                << " at depth " << depth << '\n';*/
-      if (depth == maxDepth) {
-        std::cout << " depth: " << depth << ", move: " << move
-                  << ", eval: " << localEval << '\n';
-      }
-      if (localEval > bestEval) {
-        // std::cout << "replacing bestEval: " << localEval << ", " << move << "
-        // at depth " << depth << '\n';
-        bestEval = localEval;
-        bestMove = move;
-      }
-      if (localEval > alpha) {
-        // bestMove = move;
-        alpha = localEval;
-      }
-      if (alpha >= beta) {
-        break;
-      }
+    alpha = std::max(alpha, bestEval);
+    if (alpha >= beta) {
+      break;
     }
   }
-  /*std::cout << "returning bestEval: " << coeff * bestEval << ", " << bestMove
-            << " from depth " << depth << '\n';*/
-  bestCapture = bestMove;
   return alpha;
+}
+
+libchess::Move topLevelNegamax(libchess::Position pos, const int depth = 1,
+                               int alpha = INT32_MIN,
+                               const int beta = INT32_MAX) {
+  const auto moves = pos.legal_moves();
+  if (moves.empty()) {
+    libchess::Move move;
+    return move;
+  }
+  int bestEval = INT32_MIN;
+  libchess::Move bestMove;
+  for (const auto &move : moves) {
+    pos.makemove(move);
+    int eval = -negamax(pos, depth - 1, -beta, -alpha, depth);
+    pos.undomove();
+    if (eval > bestEval) {
+      bestEval = eval;
+      bestMove = move;
+    }
+    alpha = std::max(alpha, eval);
+    if (alpha >= beta) {
+      break;
+    }
+  }
+  return bestMove;
+}
+
+int verySimpleEval(libchess::Position pos) {
+  if (pos.is_terminal()) {
+    return pos.is_checkmate() * -mateScore;
+  }
+  if (pos.threefold() || pos.fiftymoves()) {
+    return 0;
+  }
+  int toMoveCount = pos.occupancy(pos.turn()).count();
+  int oppCount = pos.occupancy(!pos.turn()).count();
+  return toMoveCount - oppCount;
+}
+
+int negamaxNoAB(libchess::Position pos, libchess::Move &bestMove, int depth) {
+  int bestEval = INT32_MIN;
+  // tmp variable to avoid overwriting progress from greater depths
+  libchess::Move tmpBestMove;
+  const auto moves = pos.legal_moves();
+  if (depth <= 0 || moves.empty()) {
+    return escalating_eval(
+        pos, depth); // evaluate_position(pos); //verySimpleEval(pos);
+  }
+  libchess::Move tmpCurrentMove;
+  for (auto const &move : moves) {
+    pos.makemove(move);
+    int localEval = -negamaxNoAB(pos, tmpCurrentMove, depth - 1);
+    pos.undomove();
+    if (localEval > bestEval) {
+      bestEval = localEval;
+      tmpBestMove = move;
+    }
+  }
+  bestMove = tmpBestMove;
+  return bestEval;
 }
 
 libchess::Move calculateMove(libchess::Position pos, int depth) {
   libchess::Move lastMove;
   auto legalMoves = pos.legal_moves();
   auto possibleCaptures = pos.legal_captures();
-  /*auto freeEstate = pos.squares_attacked(pos.turn());
-  std::cout << freeEstate << '\n';
-  freeEstate &= ~pos.squares_attacked(!pos.turn());
-  libchess::Bitboard attacked = pos.squares_attacked(!pos.turn());
-  std::cout << "attacked squares: \n" << attacked << '\n';
-  std::cout << "not attacked squares: " << ~attacked.value() << '\n';
-  std::cout << freeEstate << '\n';
-  freeEstate &= pos.occupancy(!pos.turn());
-  std::cout << freeEstate << '\n';
-  std::cout << "legalMoves: " << legalMoves.size()
-            << " possibleCaptures: " << possibleCaptures.size() << "\n";
-  libchess::Piece p;
-  auto possibleFreeCaps = pos.legal_moves();
-  possibleFreeCaps.clear();
-  if (freeEstate) {
-    for (auto sq : freeEstate) {
-      if (!sq)
-        continue;
-      std::cout << "found square with unprotected: " << sq << '\n';
-      auto att = pos.attackers(sq, pos.turn());
-      for (auto frSq : att) {
-        if (!frSq) {
-          continue;
-        }
-        libchess::Piece piece = pos.piece_on(frSq);
-        libchess::Move m = pos.parse_move(std::string{frSq} + std::string{sq});
-        if (pos.is_legal(m))
-          possibleFreeCaps.push_back(m);
-      }
-    }
-  } else {
-    std::cout << "no freeEstate available\n";
-  }
-//sort captures by capturing and
-  std::sort(possibleCaptures.begin(), possibleCaptures.end(),
-            [](libchess::Move m1, libchess::Move m2) {
-              return m1.captured() > m2.captured();
-            });
-  std::sort(possibleCaptures.begin(), possibleCaptures.end(),
-            [](libchess::Move m1, libchess::Move m2) {
-              return m1.piece() > m2.piece();
-            });
 
-            std::sort(possibleCaptures.begin(), possibleCaptures.end(),
-                      [](libchess::Move m1, libchess::Move m2) {
-                        return m1.captured() > m2.captured();
-                      });
-            std::sort(possibleCaptures.begin(), possibleCaptures.end(),
-                      [](libchess::Move m1, libchess::Move m2) {
-                        return m1.piece() > m2.piece();
-                      });*/
-  /*if (!possibleFreeCaps.empty()) {
-    std::cout << "possible Free Caps available: " << possibleFreeCaps.size()
-              << '\n';
-    lastMove = possibleFreeCaps[0];
-  } else */
-  libchess::Move bestMove;
-  // depth = 2;
-  int firstFactor = depth % 2 ? 1 : -1;
-  int bestMoveEval = negamax(pos, legalMoves, bestMove, INT64_MIN, INT64_MAX,
-                             depth, pos.turn(), depth);
+  // depth = 3;
+  std::cout << "depth in calculateMove: " << depth << '\n';
+  const auto bestMove = topLevelNegamax(pos, depth, INT32_MIN, INT32_MAX);
+  // int bestMoveEval = negamaxNoAB(pos, bestMove, depth);
   if (legalMoves.size() == 0) {
     lastMove = pos.parse_move("a1a1");
   } else {
     lastMove = bestMove;
-    std::cout << "chose Move " << bestMove << "with eval " << bestMoveEval
-              << '\n';
+    std::cout << "chose Move " << bestMove << '\n';
   }
   return lastMove;
 }
@@ -575,7 +548,8 @@ bool wrapperCallback(std::string data, game &thisGame,
   size_t timeLeft;
   if (statOrState) {
     timeLeft = state[fieldstr].get_int64().take_value();
-    availableTime += timeLeft / 900 * pos.history().size() / 2;
+    availableTime +=
+        std::min(timeLeft / 900, timeLeft / 2) * pos.history().size() / 2;
     fieldstr = side + "inc";
     std::cout << "fieldstr now is " << fieldstr << '\n';
     availableTime += state[fieldstr].get_uint64().take_value();
@@ -583,7 +557,8 @@ bool wrapperCallback(std::string data, game &thisGame,
     status = std::string{state["status"].get_string().take_value()};
   } else {
     timeLeft = stat[fieldstr].get_int64().take_value();
-    availableTime += timeLeft / 90 * pos.history().size();
+    availableTime +=
+        std::min(timeLeft / 900, timeLeft / 2) * pos.history().size() / 2;
     fieldstr = side + "inc";
     std::cout << "fieldstr now is " << fieldstr << '\n';
     availableTime += stat[fieldstr].get_uint64().take_value();
@@ -666,10 +641,12 @@ bool wrapperCallback(std::string data, game &thisGame,
       << " µs or " << mstime << " ms or "
       << std::chrono::duration_cast<std::chrono::seconds>(end - start).count()
       << " sec\n";
-  mstime = std::max(mstime, mstime / pos.legal_moves().size() * 15);
+  mstime = std::max(mstime, mstime / pos.legal_moves().size() * 25);
+  availableTime = std::min(availableTime, timeLeft);
   if (mstime == 0 || availableTime / mstime > 20) {
     ++currentDepth;
-  } else if ((mstime - (availableTime - timeLeft / 30) - 1000) > timeLeft) {
+  } else if ((mstime - 2000) > timeLeft ||
+             (mstime - (availableTime - (timeLeft / 30)) - 1000) > timeLeft) {
     --currentDepth;
   }
   if (!pos.is_legal(previousMove)) {
