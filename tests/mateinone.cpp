@@ -1,4 +1,4 @@
-#include "../src/playGames.h"
+#include "../src/engine.h"
 #include <catch2/catch.hpp>
 #include <libchess/position.hpp>
 #include <string>
@@ -11,6 +11,6 @@ TEST_CASE("Check if engine can find mate in one", "[mate]") {
     libchess::Position pos{fen};
     INFO(fen);
     CHECK(static_cast<std::string>(
-              topLevelNegamax(pos, 3, INT32_MIN, INT32_MAX)) == bestMove);
+              topLevelNegamax(pos, 3, true, -INT32_MAX, INT32_MAX)) == bestMove);
   }
 }

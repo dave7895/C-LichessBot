@@ -36,6 +36,10 @@ add_executable(
   src/lichessBot.h
   src/playGames.cpp
   src/playGames.h
+  src/engine.cpp
+  src/engine.h
+  src/apiInteraction.cpp
+  src/apiInteraction.h
 )
 target_link_libraries( ${PROJECT_NAME} cpr::cpr simdjson curl libchess)
 
@@ -46,8 +50,8 @@ add_executable(
   tests/mateinone.cpp
   tests/bestcaptures.cpp
   tests/evaluations.cpp
-  src/lichessBot.h
-  src/playGames.cpp
-  src/playGames.h
+  tests/alphabeta.cpp
+  src/engine.cpp
+  src/engine.h
 )
 target_link_libraries( ${PROJECT_NAME}-tests libchess Catch2::Catch2 cpr::cpr simdjson curl)
